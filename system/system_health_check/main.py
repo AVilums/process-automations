@@ -44,6 +44,7 @@ def collect_disk_usage():
 
 
 def count_processes():
+    print('Counting processes...')
     try:
         if os.name == 'nt':
             # Use tasklist and count non-header lines
