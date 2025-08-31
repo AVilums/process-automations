@@ -111,7 +111,7 @@ jobs:
       - name: Install automation dependencies
         shell: pwsh
         run: |
-          $automationPath = "business-process-automations/${{ matrix.automation }}"
+          $automationPath = "${{ matrix.automation }}"
           if (Test-Path "$automationPath/requirements.txt") {
             Write-Host "Installing requirements for ${{ matrix.name }}"
             pip install -r "$automationPath/requirements.txt"
@@ -122,7 +122,7 @@ jobs:
       - name: Lint automation (non-blocking)
         shell: pwsh
         run: |
-          $automationPath = "business-process-automations/${{ matrix.automation }}"
+          $automationPath = "${{ matrix.automation }}"
           flake8 "$automationPath" --max-line-length=120 --ignore=E501
           if ($LASTEXITCODE -ne 0) {
             Write-Host "Linting issues found in ${{ matrix.name }} (non-blocking)"
@@ -132,14 +132,14 @@ jobs:
       - name: Build executable
         shell: pwsh
         run: |
-          $automationPath = "business-process-automations/${{ matrix.automation }}"
+          $automationPath = "${{ matrix.automation }}"
           $executableName = "${{ matrix.name }}"
-          
+
           if (Test-Path "$automationPath/pyinstaller.spec") {
             Write-Host "Building $executableName with custom spec file"
             # Update spec file to use correct name if needed
             pyinstaller --noconfirm --distpath "dist" "$automationPath/pyinstaller.spec"
-            
+
             # Check if executable exists with spec name, rename if needed
             $specBuiltExe = Get-ChildItem -Path "dist" -Filter "*.exe" | Select-Object -First 1
             if ($specBuiltExe -and $specBuiltExe.BaseName -ne $executableName) {
