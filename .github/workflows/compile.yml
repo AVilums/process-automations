@@ -1,0 +1,217 @@
+
+name: Build Automations
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  detect-changes:
+    runs-on: windows-latest
+    outputs:
+      automations: ${{ steps.changes.outputs.automations }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed automations
+        id: changes
+        shell: pwsh
+        run: |
+          # Get list of changed files
+          if ("${{ github.event_name }}" -eq "push") {
+            $changedFiles = git diff --name-only ${{ github.event.before }} ${{ github.sha }}
+          } else {
+            $changedFiles = git diff --name-only origin/${{ github.base_ref }} ${{ github.sha }}
+          }
+          
+          Write-Host "Changed files:"
+          $changedFiles | ForEach-Object { Write-Host $_ }
+          
+          # Find automation directories that have changes (3-level structure)
+          # Pattern: business-process-automations/{category}/{automation}/
+          $changedAutomations = @()
+          foreach ($file in $changedFiles) {
+            if ($file -match '^business-process-automations/([^/]+)/([^/]+)/') {
+              $category = $matches[1]
+              $automation = $matches[2]
+              $fullPath = "$category/$automation"
+              if ($changedAutomations -notcontains $fullPath) {
+                $changedAutomations += $fullPath
+              }
+            }
+          }
+          
+          if ($changedAutomations.Count -eq 0) {
+            Write-Host "No automation changes detected"
+            echo "automations=" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "Changed automations:"
+            $changedAutomations | ForEach-Object { Write-Host $_ }
+            # Convert to JSON array for matrix
+            $automationsJson = $changedAutomations | ConvertTo-Json -Compress
+            if ($changedAutomations.Count -eq 1) {
+              $automationsJson = "[$automationsJson]"
+            }
+            echo "automations=$automationsJson" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Create build matrix
+        id: matrix
+        shell: pwsh
+        run: |
+          $automations = '${{ steps.changes.outputs.automations }}'
+          if ([string]::IsNullOrEmpty($automations)) {
+            echo "matrix={`"include`":[]}" >> $env:GITHUB_OUTPUT
+          } else {
+            # Parse JSON and create matrix
+            $automationList = $automations | ConvertFrom-Json
+            $matrixItems = @()
+            foreach ($automation in $automationList) {
+              $parts = $automation -split '/'
+              $category = $parts[0]
+              $name = $parts[1]
+              $matrixItems += @{ 
+                automation = $automation
+                category = $category
+                name = $name
+              }
+            }
+            $matrix = @{ include = $matrixItems } | ConvertTo-Json -Compress
+            echo "matrix=$matrix" >> $env:GITHUB_OUTPUT
+          }
+
+  build:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.automations != '' && needs.detect-changes.outputs.automations != 'null'
+    runs-on: windows-latest
+    strategy:
+      matrix: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
+      fail-fast: false
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install base dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller flake8
+
+      - name: Install automation dependencies
+        shell: pwsh
+        run: |
+          $automationPath = "business-process-automations/${{ matrix.automation }}"
+          if (Test-Path "$automationPath/requirements.txt") {
+            Write-Host "Installing requirements for ${{ matrix.name }}"
+            pip install -r "$automationPath/requirements.txt"
+          } else {
+            Write-Host "No requirements.txt found for ${{ matrix.name }}"
+          }
+
+      - name: Lint automation (non-blocking)
+        shell: pwsh
+        run: |
+          $automationPath = "business-process-automations/${{ matrix.automation }}"
+          flake8 "$automationPath" --max-line-length=120 --ignore=E501
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Linting issues found in ${{ matrix.name }} (non-blocking)"
+            $LASTEXITCODE = 0
+          }
+
+      - name: Build executable
+        shell: pwsh
+        run: |
+          $automationPath = "business-process-automations/${{ matrix.automation }}"
+          $executableName = "${{ matrix.name }}"
+          
+          if (Test-Path "$automationPath/pyinstaller.spec") {
+            Write-Host "Building $executableName with custom spec file"
+            # Update spec file to use correct name if needed
+            pyinstaller --noconfirm --distpath "dist" "$automationPath/pyinstaller.spec"
+            
+            # Check if executable exists with spec name, rename if needed
+            $specBuiltExe = Get-ChildItem -Path "dist" -Filter "*.exe" | Select-Object -First 1
+            if ($specBuiltExe -and $specBuiltExe.BaseName -ne $executableName) {
+              Rename-Item $specBuiltExe.FullName "$executableName.exe"
+              Write-Host "Renamed $($specBuiltExe.Name) to $executableName.exe"
+            }
+          } elseif (Test-Path "$automationPath/main.py") {
+            Write-Host "Building $executableName with default settings"
+            pyinstaller --onefile --name "$executableName" --distpath "dist" "$automationPath/main.py"
+          } else {
+            Write-Host "No main.py or pyinstaller.spec found in ${{ matrix.automation }}"
+            exit 1
+          }
+
+      - name: Verify build output
+        shell: pwsh
+        run: |
+          $expectedExe = "dist/${{ matrix.name }}.exe"
+          if (Test-Path $expectedExe) {
+            Write-Host "Successfully built: $expectedExe"
+            $fileInfo = Get-Item $expectedExe
+            Write-Host "File size: $($fileInfo.Length) bytes"
+          } else {
+            Write-Host "Expected executable not found: $expectedExe"
+            Write-Host "Contents of dist directory:"
+            Get-ChildItem -Path "dist" -Recurse | ForEach-Object { Write-Host $_.FullName }
+            exit 1
+          }
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}-executable
+          path: dist/${{ matrix.name }}.exe
+          if-no-files-found: error
+
+  create-release:
+    needs: [detect-changes, build]
+    if: startsWith(github.ref, 'refs/tags/') && needs.detect-changes.outputs.automations != '' && needs.detect-changes.outputs.automations != 'null'
+    runs-on: windows-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "release-assets"
+          Get-ChildItem -Path "artifacts" -Recurse -Filter "*.exe" | ForEach-Object {
+            Copy-Item $_.FullName "release-assets/"
+          }
+          Write-Host "Release assets:"
+          Get-ChildItem "release-assets" | ForEach-Object { Write-Host $_.Name }
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*.exe
+          generate_release_notes: true
+          body: |
+            ## Changed Automations
+            ${{ needs.detect-changes.outputs.automations }}
+            
+            Built executables for changed automations only.
+            
+            ### Built Executables
+            This release contains automation executables organized by category:
+            - Built from changed automations in `business-process-automations/{category}/{automation}/` directories
+            - Compiled for Windows x64 platform
+            - Ready for deployment via the automation launcher
+            
+            ### Categories Updated
+            Files, System, Network automations as applicable based on changes detected.
