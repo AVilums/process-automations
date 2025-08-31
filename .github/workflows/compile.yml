@@ -213,10 +213,13 @@ jobs:
           if-no-files-found: error
 
   create-release:
-    needs: [detect-changes, build]
-    if: startsWith(github.ref, 'refs/tags/') && needs.detect-changes.outputs.automations != '' && needs.detect-changes.outputs.automations != 'null'
+    needs: [ detect-changes, build ]
+    if: github.ref == 'refs/heads/main' && needs.detect-changes.outputs.automations != '' && needs.detect-changes.outputs.automations != 'null'
     runs-on: windows-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -232,22 +235,35 @@ jobs:
           Write-Host "Release assets:"
           Get-ChildItem "release-assets" | ForEach-Object { Write-Host $_.Name }
 
+      - name: Generate version tag
+        id: version
+        shell: pwsh
+        run: |
+          $date = Get-Date -Format "yyyy.MM.dd"
+          $runNumber = "${{ github.run_number }}"
+          $version = "v$date.$runNumber"
+          echo "tag=$version" >> $env:GITHUB_OUTPUT
+          echo "Generated version: $version"
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "Production Release ${{ steps.version.outputs.tag }}"
           files: release-assets/*.exe
           generate_release_notes: true
           body: |
-            ## Changed Automations
+            ## Production Release - ${{ steps.version.outputs.tag }}
+
+            **Commit:** ${{ github.sha }}
+            **Branch:** main
+            **Triggered by:** @${{ github.actor }}
+
+            ### Changed Automations
             ${{ needs.detect-changes.outputs.automations }}
-            
-            Built executables for changed automations only.
-            
+
             ### Built Executables
-            This release contains automation executables organized by category:
-            - Built from changed automations in `{category}/{automation}/` directories
+            This release contains automation executables:
             - Compiled for Windows x64 platform
-            - Ready for deployment via the automation launcher
-            
-            ### Categories Updated
-            Files, System, Network automations as applicable based on changes detected.
+            - Ready for production deployment
+            - Built from latest main branch
