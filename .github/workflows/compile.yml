@@ -34,10 +34,10 @@ jobs:
           $changedFiles | ForEach-Object { Write-Host $_ }
           
           # Find automation directories that have changes (3-level structure)
-          # Pattern: business-process-automations/{category}/{automation}/
+          # Pattern: {category}/{automation}/ (files, system, etc.)
           $changedAutomations = @()
           foreach ($file in $changedFiles) {
-            if ($file -match '^business-process-automations/([^/]+)/([^/]+)/') {
+            if ($file -match '^(files|system|network)/([^/]+)/') {
               $category = $matches[1]
               $automation = $matches[2]
               $fullPath = "$category/$automation"
