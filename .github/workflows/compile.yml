@@ -1,4 +1,3 @@
-
 name: Build Automations
 
 on:
@@ -29,12 +28,21 @@ jobs:
           } else {
             $changedFiles = git diff --name-only origin/${{ github.base_ref }} ${{ github.sha }}
           }
-          
+
           Write-Host "Changed files:"
           $changedFiles | ForEach-Object { Write-Host $_ }
-          
-          # Find automation directories that have changes (3-level structure)
-          # Pattern: {category}/{automation}/ (files, system, etc.)
+
+          # Find all automation directories
+          $allAutomations = @()
+          $automationDirs = Get-ChildItem -Path "." -Directory | Where-Object { $_.Name -in @("files", "system", "network") }
+          foreach ($categoryDir in $automationDirs) {
+            $subDirs = Get-ChildItem -Path $categoryDir.FullName -Directory
+            foreach ($subDir in $subDirs) {
+              $allAutomations += "$($categoryDir.Name)/$($subDir.Name)"
+            }
+          }
+
+          # Find automations with changes
           $changedAutomations = @()
           foreach ($file in $changedFiles) {
             if ($file -match '^(files|system|network)/([^/]+)/') {
@@ -46,16 +54,44 @@ jobs:
               }
             }
           }
-          
+
+          # Find automations without executables (first-time builds)
+          $automationsToCheck = @()
+          foreach ($automation in $allAutomations) {
+            $parts = $automation -split '/'
+            $name = $parts[1]
+            $exePath = "artifacts/$name.exe"
+
+            # Check if executable exists in artifacts (you might need to adjust this path)
+            # For now, we'll assume missing executables need building
+            if (Test-Path "$($parts[0])/$($parts[1])/main.py") {
+              $automationsToCheck += $automation
+            }
+          }
+
+          # Combine changed automations with missing executables
+          $automationsToBuild = @()
+          foreach ($automation in $changedAutomations) {
+            if ($automationsToBuild -notcontains $automation) {
+              $automationsToBuild += $automation
+            }
+          }
+
+          # Add missing executables only if no changes detected
           if ($changedAutomations.Count -eq 0) {
-            Write-Host "No automation changes detected"
+            Write-Host "No changes detected, checking for missing executables..."
+            $automationsToBuild = $automationsToCheck
+          }
+
+          if ($automationsToBuild.Count -eq 0) {
+            Write-Host "No automations to build"
             echo "automations=" >> $env:GITHUB_OUTPUT
           } else {
-            Write-Host "Changed automations:"
-            $changedAutomations | ForEach-Object { Write-Host $_ }
+            Write-Host "Automations to build:"
+            $automationsToBuild | ForEach-Object { Write-Host $_ }
             # Convert to JSON array for matrix
-            $automationsJson = $changedAutomations | ConvertTo-Json -Compress
-            if ($changedAutomations.Count -eq 1) {
+            $automationsJson = $automationsToBuild | ConvertTo-Json -Compress
+            if ($automationsToBuild.Count -eq 1) {
               $automationsJson = "[$automationsJson]"
             }
             echo "automations=$automationsJson" >> $env:GITHUB_OUTPUT
@@ -93,7 +129,7 @@ jobs:
     strategy:
       matrix: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
       fail-fast: false
-    
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -134,12 +170,12 @@ jobs:
         run: |
           $automationPath = "${{ matrix.automation }}"
           $executableName = "${{ matrix.name }}"
-
+          
           if (Test-Path "$automationPath/pyinstaller.spec") {
             Write-Host "Building $executableName with custom spec file"
-            # Update spec file to use correct name if needed
+            # Build with spec file from the automation directory
             pyinstaller --noconfirm --distpath "dist" "$automationPath/pyinstaller.spec"
-
+            
             # Check if executable exists with spec name, rename if needed
             $specBuiltExe = Get-ChildItem -Path "dist" -Filter "*.exe" | Select-Object -First 1
             if ($specBuiltExe -and $specBuiltExe.BaseName -ne $executableName) {
@@ -209,7 +245,7 @@ jobs:
             
             ### Built Executables
             This release contains automation executables organized by category:
-            - Built from changed automations in `business-process-automations/{category}/{automation}/` directories
+            - Built from changed automations in `{category}/{automation}/` directories
             - Compiled for Windows x64 platform
             - Ready for deployment via the automation launcher
             
