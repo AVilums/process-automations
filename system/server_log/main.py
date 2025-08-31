@@ -5,7 +5,7 @@ import os
 import subprocess
 
 log_file = "server_log.txt"
-backup_folder = "log_backups"
+backup_folder = "log_backup"
 downtime_flag_file = "downtime_flag.txt"
 target_server = " "
 max_consecutive_failures = 3
