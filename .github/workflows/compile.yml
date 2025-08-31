@@ -213,10 +213,13 @@ jobs:
           if-no-files-found: error
 
   create-release:
-    needs: [detect-changes, build]
+    needs: [ detect-changes, build ]
     if: github.ref == 'refs/heads/main' && needs.detect-changes.outputs.automations != '' && needs.detect-changes.outputs.automations != 'null'
     runs-on: windows-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -235,19 +238,19 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: "build-${{ github.run_number }}"
+          name: "Build ${{ github.run_number }} - Automated Release"
           files: release-assets/*.exe
           generate_release_notes: true
+          prerelease: true
           body: |
             ## Changed Automations
             ${{ needs.detect-changes.outputs.automations }}
-            
+
             Built executables for changed automations only.
-            
+
             ### Built Executables
             This release contains automation executables organized by category:
             - Built from changed automations in `{category}/{automation}/` directories
             - Compiled for Windows x64 platform
             - Ready for deployment via the automation launcher
-            
-            ### Categories Updated
-            Files, System, Network automations as applicable based on changes detected.
