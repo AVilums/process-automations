@@ -283,8 +283,8 @@ jobs:
             exit 1
           }
 
-          # Verify build output
-          $expectedExe = Join-Path "dist" "$executableName.exe"
+          # Verify build output using the absolute path we passed to the compiler
+          $expectedExe = $outputPath
           if (Test-Path $expectedExe) {
             Write-Host "AutoIt build successful for $executableName"
             $fileInfo = Get-Item $expectedExe
