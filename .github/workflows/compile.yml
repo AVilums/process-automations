@@ -44,7 +44,7 @@ jobs:
           foreach ($f in $found) {
             $lang = if ($f.Name -eq "main.py") { "python" } else { "autoit" }
             $dirFs = $f.Directory.FullName
-            $relative = $dirFs.Substring($repoRoot.Length).TrimStart('\\','/')
+            $relative = $dirFs.Substring($repoRoot.Length).TrimStart('\','/')
             $relative = $relative -replace '\\','/'
             # Expect pattern: struct X/team Y/<automation>
             if ($relative -match '^struct [^/]+/team [^/]+/[^/]+$') {
