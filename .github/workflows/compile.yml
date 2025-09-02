@@ -67,7 +67,7 @@ jobs:
               Invoke-WebRequest -Uri $u -OutFile $setupPath -UseBasicParsing -TimeoutSec 300
               if ((Test-Path $setupPath) -and ((Get-Item $setupPath).Length -gt 1000000)) { $downloaded = $true; break }
             } catch {
-              Write-Host "Download failed from $u: $($_.Exception.Message)"
+              Write-Host "Download failed from ${u}: $($_.Exception.Message)"
             }
           }
           if (-not $downloaded) { throw 'Failed to download AutoIt installer.' }
@@ -103,7 +103,7 @@ jobs:
                 Write-Host "Trying to download SciTE: $u"
                 Invoke-WebRequest -Uri $u -OutFile $sciteSetup -UseBasicParsing -TimeoutSec 300
                 if ((Test-Path $sciteSetup) -and ((Get-Item $sciteSetup).Length -gt 1000000)) { $downloadedSciTE = $true; break }
-              } catch { Write-Host "SciTE download failed from $u: $($_.Exception.Message)" }
+              } catch { Write-Host "SciTE download failed from ${u}: $($_.Exception.Message)" }
             }
             if ($downloadedSciTE) {
               $installArgs2 = @('/S', "/D=$tools")
