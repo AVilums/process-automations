@@ -1,232 +1,77 @@
-name: AutoIt Compile and Release (No-Choco)
+name: Build AutoIt
 
 on:
-  workflow_dispatch:
-    inputs:
-      arch:
-        description: "Target architecture to build"
-        type: choice
-        required: true
-        default: x64
-        options:
-          - x64
-          - x86
-          - both
-      tag:
-        description: "Release tag (leave empty to auto-generate)"
-        required: false
-        type: string
   push:
-    tags:
-      - 'v*'
+    branches: [ main ]
+    paths:
+      - '**/*.au3'
+      - '.github/workflows/**'
+  pull_request:
+    paths:
+      - '**/*.au3'
+  workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency: ci-${{ github.ref }}
+
 jobs:
   build:
     runs-on: windows-latest
-    env:
-      AUTOIT_INSTALL_DIR: ${{ github.workspace }}\_tools\AutoIt3
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: true
 
-      - name: Prepare local tools directory
-        shell: pwsh
+      - name: Cache installers
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            autoit-v3-setup.exe
+            SciTE4AutoIt3.exe
+          key: autoit-installers-${{ runner.os }}-${{ hashFiles('.github/workflows/compile.yml') }}
+
+      - name: Download installers
+        if: steps.cache.outputs.cache-hit != 'true'
         run: |
-          $tools = "$env:AUTOIT_INSTALL_DIR"
-          New-Item -ItemType Directory -Force -Path $tools | Out-Null
-          Write-Host "Tools dir: $tools"
+          Invoke-WebRequest 'https://www.autoitscript.com/cgi-bin/getfile.pl?autoit3/autoit-v3-setup.exe' -OutFile 'autoit-v3-setup.exe'
+          Invoke-WebRequest 'https://www.autoitscript.com/cgi-bin/getfile.pl?../autoit3/scite/download/SciTE4AutoIt3.exe' -OutFile 'SciTE4AutoIt3.exe'
 
-      - name: Download and install AutoIt locally (no admin, no choco)
-        id: install_autoit
-        shell: pwsh
+      - name: Install AutoIt and SciTE
         run: |
-          $ErrorActionPreference = 'Stop'
-          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Start-Process -FilePath "$PWD\autoit-v3-setup.exe" -ArgumentList '/S' -Wait
+          Start-Process -FilePath "$PWD\SciTE4AutoIt3.exe" -ArgumentList '/S' -Wait
 
-          $tools = "$env:AUTOIT_INSTALL_DIR"
-          # Use a temp path without spaces for NSIS /D argument safety
-          if ($tools -match ' ') {
-            $tools = Join-Path $env:RUNNER_TEMP 'AutoIt3'
-            New-Item -ItemType Directory -Force -Path $tools | Out-Null
-          }
-
-          $setupPath = Join-Path $env:RUNNER_TEMP 'autoit-setup.exe'
-          # Try current valid lowercase filenames first, then legacy uppercase variants
-          $urls = @(
-            'https://www.autoitscript.com/files/autoit3/autoit-v3-setup.exe',
-            'https://www.autoitscript.com/cgi-bin/getfile.pl?autoit3/autoit-v3-setup.exe',
-            'https://www.autoitscript.com/autoit3/files/autoit3/autoit-v3-setup.exe',
-            'https://www.autoitscript.com/files/autoit3/AutoIt-v3-Setup.exe',
-            'https://www.autoitscript.com/autoit3/files/autoit3/AutoIt-v3-Setup.exe',
-            'https://www.autoitscript.com/cgi-bin/getfile.pl?autoit3/AutoIt-v3-Setup.exe'
-          )
-
-          $downloaded = $false
-          foreach ($u in $urls) {
-            try {
-              Write-Host "Trying to download: $u"
-              Invoke-WebRequest -Uri $u -OutFile $setupPath -UseBasicParsing -TimeoutSec 300
-              if ((Test-Path $setupPath) -and ((Get-Item $setupPath).Length -gt 1000000)) { $downloaded = $true; break }
-            } catch {
-              Write-Host "Download failed from ${u}: $($_.Exception.Message)"
-            }
-          }
-          if (-not $downloaded) { throw 'Failed to download AutoIt installer.' }
-
-          # Silent install into user-space directory. NSIS requires /D=<path> as the last arg and unquoted.
-          $installArgs = @('/S', "/D=$tools")
-          Write-Host "Installing AutoIt into: $tools"
-          $p = Start-Process -FilePath $setupPath -ArgumentList $installArgs -NoNewWindow -Wait -PassThru
-          if ($p.ExitCode -ne 0) {
-            Write-Host "Installer returned code $($p.ExitCode). Proceeding to verify files anyway..."
-          }
-
-          # Locate Aut2Exe in the local install tree
-          $candidates = @(
-            (Join-Path $tools 'Aut2Exe\Aut2Exe_x64.exe'),
-            (Join-Path $tools 'Aut2Exe\Aut2Exe.exe'),
-            (Join-Path $tools 'AutoIt3\Aut2Exe\Aut2Exe_x64.exe'),
-            (Join-Path $tools 'AutoIt3\Aut2Exe\Aut2Exe.exe')
-          )
-          $aut2exe = $null
-          foreach ($c in $candidates) { if (Test-Path $c) { $aut2exe = $c; break } }
-
-          if (-not $aut2exe) {
-            # As a fallback, attempt SciTE4AutoIt3 installer (also NSIS)
-            $sciteSetup = Join-Path $env:RUNNER_TEMP 'scite4autoit3.exe'
-            $sciteUrls = @(
-              'https://www.autoitscript.com/files/autoit3/scite/AutoIt_SciTE.exe',
-              'https://www.autoitscript.com/autoit3/files/scite/AutoIt_SciTE.exe'
-            )
-            $downloadedSciTE = $false
-            foreach ($u in $sciteUrls) {
-              try {
-                Write-Host "Trying to download SciTE: $u"
-                Invoke-WebRequest -Uri $u -OutFile $sciteSetup -UseBasicParsing -TimeoutSec 300
-                if ((Test-Path $sciteSetup) -and ((Get-Item $sciteSetup).Length -gt 1000000)) { $downloadedSciTE = $true; break }
-              } catch { Write-Host "SciTE download failed from ${u}: $($_.Exception.Message)" }
-            }
-            if ($downloadedSciTE) {
-              $installArgs2 = @('/S', "/D=$tools")
-              Write-Host "Installing SciTE4AutoIt3 into: $tools"
-              Start-Process -FilePath $sciteSetup -ArgumentList $installArgs2 -NoNewWindow -Wait | Out-Null
-              $candidates2 = @(
-                (Join-Path $tools 'Aut2Exe\Aut2Exe_x64.exe'),
-                (Join-Path $tools 'Aut2Exe\Aut2Exe.exe'),
-                (Join-Path $tools 'AutoIt3\Aut2Exe\Aut2Exe_x64.exe'),
-                (Join-Path $tools 'AutoIt3\Aut2Exe\Aut2Exe.exe')
-              )
-              foreach ($c in $candidates2) { if (Test-Path $c) { $aut2exe = $c; break } }
-            }
-          }
-
-          if (-not $aut2exe) { throw "Aut2Exe not found under $tools after installation." }
-
-          Write-Host "Using Aut2Exe at: $aut2exe"
-          "AUT2EXE=$aut2exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
-      - name: Compile all AutoIt main.au3 scripts
-        shell: pwsh
+      - name: Compile script
+        env:
+          SCRIPT_PATH: struct 1\team 3\automation 1\main.au3
         run: |
-          $ErrorActionPreference = 'Stop'
-          $aut2exe = "$env:AUT2EXE"
-          if (-not (Test-Path $aut2exe)) { throw "Aut2Exe not found: $aut2exe" }
+          $scriptPath = "$env:SCRIPT_PATH"
+          $wrapper = "${env:ProgramFiles(x86)}\AutoIt3\SciTE\AutoIt3Wrapper\AutoIt3Wrapper.au3"
+          $autoit = "${env:ProgramFiles(x86)}\AutoIt3\AutoIt3.exe"
+          & $autoit $wrapper /NoStatus /prod /in "$scriptPath"
+          Get-ChildItem -Path (Split-Path $scriptPath) -Filter '*.exe' | Get-FileHash -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  $($_.Path)" } | Set-Content -Path 'checksums.sha256' -Encoding ASCII
 
-          $arch = '${{ github.event.inputs.arch }}'
-          if ([string]::IsNullOrWhiteSpace($arch)) { $arch = 'x64' }
-
-          $repoRoot = (Get-Location).Path
-          $dist = Join-Path $repoRoot 'dist'
-          New-Item -ItemType Directory -Force -Path $dist | Out-Null
-
-          # Discover main.au3 scripts only (avoid compiling helper .au3 files)
-          $targets = Get-ChildItem -Path $repoRoot -Recurse -File -Filter 'main.au3'
-          if ($targets.Count -eq 0) {
-            Write-Host 'No main.au3 files found to compile.'
-            exit 0
-          }
-
-          foreach ($file in $targets) {
-            $automationDir = $file.DirectoryName
-            $name = Split-Path -Path $automationDir -Leaf
-
-            if ($arch -eq 'both') {
-              $out64 = Join-Path $dist ("$name-x64.exe")
-              $out86 = Join-Path $dist ("$name-x86.exe")
-
-              Push-Location $automationDir
-              try {
-                & "$aut2exe" /console /in 'main.au3' /out "$out64" /x64
-                if (-not (Test-Path $out64)) { Write-Host "x64 build failed for $name"; }
-
-                & "$aut2exe" /console /in 'main.au3' /out "$out86" /x86
-                if (-not (Test-Path $out86)) { Write-Host "x86 build failed for $name"; }
-              } finally { Pop-Location }
-
-            } else {
-              $out = Join-Path $dist ("$name.exe")
-              Push-Location $automationDir
-              try {
-                $args = @('/console','/in','main.au3','/out',"$out")
-                if ($arch -eq 'x64') { $args += '/x64' }
-                if ($arch -eq 'x86') { $args += '/x86' }
-                & "$aut2exe" @args
-              } finally { Pop-Location }
-              if (-not (Test-Path $out)) { throw "Build failed for $name" }
-            }
-          }
-
-          Write-Host 'Compilation complete. Files in dist:'
-          Get-ChildItem -Path $dist -Filter *.exe | ForEach-Object { Write-Host $_.FullName }
-
-      - name: Upload executables
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: autoit-executables
-          path: dist\*.exe
-          if-no-files-found: warn
+          name: autoit-build
+          path: |
+            struct 1\team 3\automation 1\*.exe
+            checksums.sha256
+          if-no-files-found: error
 
-  release:
-    needs: build
-    runs-on: windows-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
         with:
-          name: autoit-executables
-          path: release-assets
-
-      - name: Determine release tag
-        id: version
-        shell: pwsh
-        run: |
-          $tag = '${{ github.event.inputs.tag }}'
-          if ([string]::IsNullOrWhiteSpace($tag)) {
-            if ('${{ github.ref_type }}' -eq 'tag' -and -not [string]::IsNullOrWhiteSpace('${{ github.ref_name }}')) {
-              $tag = '${{ github.ref_name }}'
-            } else {
-              $date = Get-Date -Format 'yyyy.MM.dd'
-              $run = '${{ github.run_number }}'
-              $tag = "v$date.$run"
-            }
-          }
-          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          Write-Host "Release tag: $tag"
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: AutoIt Release ${{ steps.version.outputs.tag }}
-          files: release-assets/*.exe
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          files: |
+            struct 1\team 3\automation 1\*.exe
+            checksums.sha256
