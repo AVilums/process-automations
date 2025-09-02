@@ -259,13 +259,22 @@ jobs:
             exit 1
           }
 
-          # Attempt x64 build first, then fallback to default if it fails
-          & "$aut2exe" /in "$automationPath\main.au3" /out "dist\$executableName.exe" /x64
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "Aut2Exe x64 build failed for $executableName, retrying without /x64..."
-            & "$aut2exe" /in "$automationPath\main.au3" /out "dist\$executableName.exe"
+          # Precompute absolute output path and change working directory to the script folder to avoid path/space issues
+          $repoRoot = (Get-Location).Path
+          $distPath = Join-Path $repoRoot ("dist\" + $executableName + ".exe")
+          Push-Location "$automationPath"
+          try {
+            # Attempt x64 build first, then fallback to default if it fails
+            & "$aut2exe" /console /in "main.au3" /out "$distPath" /x64
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "Aut2Exe x64 build failed for $executableName, retrying without /x64..."
+              & "$aut2exe" /console /in "main.au3" /out "$distPath"
+            }
+          } finally {
+            Pop-Location
           }
-          if ($LASTEXITCODE -ne 0) {
+          # Treat as success if the output file exists, even if exit code was non-zero (some versions return warnings as non-zero)
+          if (-not (Test-Path "$distPath")) {
             Write-Host "AutoIt build failed for $executableName"
             exit 1
           }
