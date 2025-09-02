@@ -27,7 +27,7 @@ jobs:
   build:
     runs-on: windows-latest
     env:
-      AUTOIT_INSTALL_DIR: ${{ runner.temp }}\AutoIt3
+      AUTOIT_INSTALL_DIR: ${{ github.workspace }}\_tools\AutoIt3
     steps:
       - name: Checkout
         uses: actions/checkout@v4
