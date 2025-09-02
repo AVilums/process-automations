@@ -252,8 +252,24 @@ jobs:
               & $autoit $wrapper /NoStatus /prod /in "main.au3" /out "$outputPath"
 
               # Check if output file was created (AutoIt3Wrapper may return non-zero even on success)
-              if (Test-Path "$outputPath") {
-                Write-Host "AutoIt3Wrapper succeeded - executable created"
+              $exists = Test-Path "$outputPath"
+              if (-not $exists) {
+                # Brief retry to handle potential file system delay
+                Start-Sleep -Milliseconds 300
+                $exists = Test-Path "$outputPath"
+              }
+              if (-not $exists) {
+                # Probe dist directory for expected executable in case wrapper ignored /out
+                $candidate = Join-Path (Join-Path $repoRoot "dist") "$executableName.exe"
+                if (Test-Path $candidate) {
+                  Write-Host "Found executable at $candidate after wrapper"
+                  $outputPath = $candidate
+                  $exists = $true
+                }
+              }
+
+              if ($exists) {
+                Write-Host "AutoIt3Wrapper produced executable."
                 $LASTEXITCODE = 0
               } else {
                 Write-Host "AutoIt3Wrapper build failed, trying direct Aut2Exe..."
@@ -285,6 +301,17 @@ jobs:
 
           # Verify build output using the absolute path we passed to the compiler
           $expectedExe = $outputPath
+          if (-not (Test-Path $expectedExe)) {
+            # brief retry and probe dist before failing
+            Start-Sleep -Milliseconds 300
+            if (-not (Test-Path $expectedExe)) {
+              $candidate = Join-Path (Join-Path (Get-Location).Path "dist") "$executableName.exe"
+              if (Test-Path $candidate) {
+                Write-Host "Using discovered executable at $candidate"
+                $expectedExe = $candidate
+              }
+            }
+          }
           if (Test-Path $expectedExe) {
             Write-Host "AutoIt build successful for $executableName"
             $fileInfo = Get-Item $expectedExe
