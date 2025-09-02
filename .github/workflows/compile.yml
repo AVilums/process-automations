@@ -1,14 +1,9 @@
-name: Build AutoIt
+name: Build Automations
 
 on:
   push:
-    branches: [ main ]
-    paths:
-      - '**/*.au3'
-      - '.github/workflows/**'
+    branches: ["main"]
   pull_request:
-    paths:
-      - '**/*.au3'
   workflow_dispatch:
 
 permissions:
@@ -17,20 +12,126 @@ permissions:
 concurrency: ci-${{ github.ref }}
 
 jobs:
+  detect-changes:
+    runs-on: windows-latest
+    outputs:
+      automations: ${{ steps.changes.outputs.automations }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed automations
+        id: changes
+        shell: pwsh
+        run: |
+          # Get list of changed files
+          if ("${{ github.event_name }}" -eq "push") {
+            $changedFiles = git diff --name-only ${{ github.event.before }} ${{ github.sha }}
+          } else {
+            $changedFiles = git diff --name-only origin/${{ github.base_ref }} ${{ github.sha }}
+          }
+
+          Write-Host "Changed files:"
+          $changedFiles | ForEach-Object { Write-Host $_ }
+
+          # Discover all automations (directories containing main.py or main.au3)
+          $repoRoot = (Get-Location).Path
+          $found = Get-ChildItem -Path ".\*" -Recurse -File -Filter "main.*" | Where-Object { $_.Name -in @("main.py","main.au3") }
+
+          $allAutomations = @()
+          $seen = @{}
+          foreach ($f in $found) {
+            $lang = if ($f.Name -eq "main.py") { "python" } else { "autoit" }
+            $dirFs = $f.Directory.FullName
+            $relative = $dirFs.Substring($repoRoot.Length).TrimStart('\','/')
+            $relative = $relative -replace '\\','/'
+            # Expect pattern: struct X/team Y/<automation>
+            if ($relative -match '^struct [^/]+/team [^/]+/[^/]+$') {
+              if (-not $seen.ContainsKey($relative)) {
+                $name = Split-Path -Path $relative -Leaf
+                $obj = [PSCustomObject]@{ automation = $relative; name = $name; lang = $lang }
+                $allAutomations += $obj
+                $seen[$relative] = $true
+              }
+            }
+          }
+
+          # Find automations with changes (map changed files into struct X/team Y/<automation> roots)
+          $changedSet = @{}
+          foreach ($file in $changedFiles) {
+            if ([string]::IsNullOrWhiteSpace($file)) { continue }
+            $parts = $file -split '/'
+            if ($parts.Length -ge 4 -and $parts[0] -like 'struct*' -and $parts[1] -like 'team*') {
+              $root = "$($parts[0])/$($parts[1])/$($parts[2])"
+              $changedSet[$root] = $true
+            }
+          }
+
+          # Decide which automations to build
+          $automationsToBuild = @()
+          if ($changedSet.Keys.Count -gt 0) {
+            foreach ($a in $allAutomations) {
+              if ($changedSet.ContainsKey($a.automation)) { $automationsToBuild += $a }
+            }
+          } else {
+            Write-Host "No changes detected, building all discovered automations..."
+            $automationsToBuild = $allAutomations
+          }
+
+          if ($automationsToBuild.Count -eq 0) {
+            Write-Host "No automations to build"
+            echo "automations=" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "Automations to build:"
+            $automationsToBuild | ForEach-Object { Write-Host ("{0} [{1}]" -f $_.automation, $_.lang) }
+            # Convert to JSON array for matrix
+            $automationsJson = $automationsToBuild | ConvertTo-Json -Compress
+            if ($automationsToBuild.Count -eq 1) {
+              $automationsJson = "[$automationsJson]"
+            }
+            echo "automations=$automationsJson" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Create build matrix
+        id: matrix
+        shell: pwsh
+        run: |
+          $automations = '${{ steps.changes.outputs.automations }}'
+          if ([string]::IsNullOrEmpty($automations)) {
+            echo "matrix={`"include`":[]}" >> $env:GITHUB_OUTPUT
+          } else {
+            # Parse JSON and create matrix directly from provided objects
+            $automationList = $automations | ConvertFrom-Json
+            if ($automationList -isnot [System.Array]) { $automationList = @($automationList) }
+            $matrix = @{ include = $automationList } | ConvertTo-Json -Compress
+            echo "matrix=$matrix" >> $env:GITHUB_OUTPUT
+          }
+
   build:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.automations != '' && needs.detect-changes.outputs.automations != 'null'
     runs-on: windows-latest
     timeout-minutes: 20
+    strategy:
+      matrix: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
+      fail-fast: false
     defaults:
       run:
         shell: pwsh
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: true
 
-      - name: Cache installers
-        id: cache
+      # AutoIt Setup
+      - name: Cache AutoIt installers
+        if: ${{ matrix.lang == 'autoit' }}
+        id: cache-autoit
         uses: actions/cache@v4
         with:
           path: |
@@ -38,40 +139,258 @@ jobs:
             SciTE4AutoIt3.exe
           key: autoit-installers-${{ runner.os }}-${{ hashFiles('.github/workflows/compile.yml') }}
 
-      - name: Download installers
-        if: steps.cache.outputs.cache-hit != 'true'
+      - name: Download AutoIt installers
+        if: ${{ matrix.lang == 'autoit' && steps.cache-autoit.outputs.cache-hit != 'true' }}
         run: |
           Invoke-WebRequest 'https://www.autoitscript.com/cgi-bin/getfile.pl?autoit3/autoit-v3-setup.exe' -OutFile 'autoit-v3-setup.exe'
           Invoke-WebRequest 'https://www.autoitscript.com/cgi-bin/getfile.pl?../autoit3/scite/download/SciTE4AutoIt3.exe' -OutFile 'SciTE4AutoIt3.exe'
 
       - name: Install AutoIt and SciTE
+        if: ${{ matrix.lang == 'autoit' }}
         run: |
           Start-Process -FilePath "$PWD\autoit-v3-setup.exe" -ArgumentList '/S' -Wait
           Start-Process -FilePath "$PWD\SciTE4AutoIt3.exe" -ArgumentList '/S' -Wait
 
-      - name: Compile script
-        env:
-          SCRIPT_PATH: struct 1\team 3\automation 1\main.au3
+      # Python Setup
+      - name: Setup Python
+        if: ${{ matrix.lang == 'python' }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install base dependencies
+        if: ${{ matrix.lang == 'python' }}
         run: |
-          $scriptPath = "$env:SCRIPT_PATH"
+          python -m pip install --upgrade pip
+          pip install pyinstaller flake8
+
+      - name: Install automation dependencies
+        if: ${{ matrix.lang == 'python' }}
+        shell: pwsh
+        run: |
+          $automationPath = "${{ matrix.automation }}"
+          if (Test-Path "$automationPath/requirements.txt") {
+            Write-Host "Installing requirements for ${{ matrix.name }}"
+            pip install -r "$automationPath/requirements.txt"
+          } else {
+            Write-Host "No requirements.txt found for ${{ matrix.name }}"
+          }
+
+      # Linting (non-blocking)
+      - name: Lint Python (non-blocking)
+        if: ${{ matrix.lang == 'python' }}
+        shell: pwsh
+        run: |
+          $automationPath = "${{ matrix.automation }}"
+          flake8 "$automationPath" --max-line-length=120 --ignore=E501
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Linting issues found in ${{ matrix.name }} (non-blocking)"
+            $LASTEXITCODE = 0
+          }
+
+      - name: Lint AutoIt (non-blocking)
+        if: ${{ matrix.lang == 'autoit' }}
+        shell: pwsh
+        run: |
+          $automationPath = "${{ matrix.automation }}"
+          $au3check = "${env:ProgramFiles(x86)}\AutoIt3\AU3Check.exe"
+          if (Test-Path $au3check) {
+            & $au3check -q "$automationPath\main.au3"
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "AutoIt lint issues in ${{ matrix.name }} (non-blocking)"
+              $LASTEXITCODE = 0
+            }
+          } else {
+            Write-Host "AU3Check not found. Skipping AutoIt lint."
+          }
+
+      # Building
+      - name: Build Python executable
+        if: ${{ matrix.lang == 'python' }}
+        shell: pwsh
+        run: |
+          $automationPath = "${{ matrix.automation }}"
+          $executableName = "${{ matrix.name }}"
+          New-Item -ItemType Directory -Force -Path "dist" | Out-Null
+          if (Test-Path "$automationPath/pyinstaller.spec") {
+            Write-Host "Building $executableName with custom spec file"
+            pyinstaller --noconfirm --distpath "dist" "$automationPath/pyinstaller.spec"
+            $specBuiltExe = Get-ChildItem -Path "dist" -Filter "*.exe" | Select-Object -First 1
+            if ($specBuiltExe -and $specBuiltExe.BaseName -ne $executableName) {
+              Rename-Item -Path $specBuiltExe.FullName -NewName "$executableName.exe"
+              Write-Host "Renamed $($specBuiltExe.Name) to $executableName.exe"
+            }
+          } elseif (Test-Path "$automationPath/main.py") {
+            Write-Host "Building $executableName with default settings"
+            pyinstaller --onefile --name "$executableName" --distpath "dist" "$automationPath/main.py"
+          } else {
+            Write-Host "No main.py or pyinstaller.spec found in ${{ matrix.automation }}"
+            exit 1
+          }
+
+      - name: Build AutoIt executable
+        if: ${{ matrix.lang == 'autoit' }}
+        shell: pwsh
+        run: |
+          $automationPath = "${{ matrix.automation }}"
+          $executableName = "${{ matrix.name }}"
+          New-Item -ItemType Directory -Force -Path "dist" | Out-Null
+          
+          # Use AutoIt3Wrapper for compilation (more robust than Aut2Exe directly)
           $wrapper = "${env:ProgramFiles(x86)}\AutoIt3\SciTE\AutoIt3Wrapper\AutoIt3Wrapper.au3"
           $autoit = "${env:ProgramFiles(x86)}\AutoIt3\AutoIt3.exe"
-          & $autoit $wrapper /NoStatus /prod /in "$scriptPath"
-          Get-ChildItem -Path (Split-Path $scriptPath) -Filter '*.exe' | Get-FileHash -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  $($_.Path)" } | Set-Content -Path 'checksums.sha256' -Encoding ASCII
+          
+          if (Test-Path $wrapper -and Test-Path $autoit) {
+            $repoRoot = (Get-Location).Path
+            $outputPath = Join-Path $repoRoot "dist\$executableName.exe"
+            Push-Location "$automationPath"
+            try {
+              & $autoit $wrapper /NoStatus /prod /in "main.au3" /out "$outputPath"
+              if ($LASTEXITCODE -ne 0) {
+                Write-Host "AutoIt3Wrapper build failed, trying direct Aut2Exe..."
+                # Fallback to direct Aut2Exe compilation
+                $aut2exe = "${env:ProgramFiles(x86)}\AutoIt3\Aut2Exe\Aut2Exe_x64.exe"
+                if (-not (Test-Path $aut2exe)) {
+                  $aut2exe = "${env:ProgramFiles(x86)}\AutoIt3\Aut2Exe\Aut2Exe.exe"
+                }
+                if (Test-Path $aut2exe) {
+                  & "$aut2exe" /console /in "main.au3" /out "$outputPath" /x64
+                  if ($LASTEXITCODE -ne 0) {
+                    & "$aut2exe" /console /in "main.au3" /out "$outputPath"
+                  }
+                }
+              }
+            } finally {
+              Pop-Location
+            }
+          } else {
+            Write-Host "AutoIt3Wrapper not found at expected location"
+            exit 1
+          }
+          
+          # Verify build output
+          $expectedExe = "dist\$executableName.exe"
+          if (-not (Test-Path $expectedExe)) {
+            Write-Host "AutoIt build failed for $executableName"
+            exit 1
+          }
 
-      - name: Upload artifact
+      # Generate checksums
+      - name: Generate checksums
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "dist" | Out-Null
+          Get-ChildItem -Path "dist" -Filter "*.exe" | Get-FileHash -Algorithm SHA256 | 
+            ForEach-Object { "$($_.Hash)  $($_.Path | Split-Path -Leaf)" } | 
+            Set-Content -Path "dist\checksums.sha256" -Encoding ASCII
+
+      - name: Verify build output
+        shell: pwsh
+        run: |
+          $expectedExe = "dist/${{ matrix.name }}.exe"
+          if (Test-Path $expectedExe) {
+            Write-Host "Successfully built: $expectedExe"
+            $fileInfo = Get-Item $expectedExe
+            Write-Host "File size: $($fileInfo.Length) bytes"
+          } else {
+            Write-Host "Expected executable not found: $expectedExe"
+            Write-Host "Contents of dist directory:"
+            Get-ChildItem -Path "dist" -Recurse | ForEach-Object { Write-Host $_.FullName }
+            exit 1
+          }
+
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: autoit-build
+          name: ${{ matrix.name }}-executable
           path: |
-            struct 1\team 3\automation 1\*.exe
-            checksums.sha256
+            dist/${{ matrix.name }}.exe
+            dist/checksums.sha256
           if-no-files-found: error
 
-      - name: Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v1
+  create-release:
+    needs: [ detect-changes, build ]
+    if: github.ref == 'refs/heads/main' && needs.detect-changes.outputs.automations != '' && needs.detect-changes.outputs.automations != 'null'
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
         with:
-          files: |
-            struct 1\team 3\automation 1\*.exe
-            checksums.sha256
+          path: artifacts
+
+      - name: Prepare release assets as ZIP
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "release-assets"
+          
+          # Create individual ZIP files for each executable
+          Get-ChildItem -Path "artifacts" -Directory | ForEach-Object {
+            $artifactName = $_.Name -replace '-executable$', ''
+            $exeFiles = Get-ChildItem -Path $_.FullName -Filter "*.exe"
+            $checksumFiles = Get-ChildItem -Path $_.FullName -Filter "checksums.sha256"
+            
+            if ($exeFiles.Count -gt 0) {
+              $zipPath = "release-assets\$artifactName.zip"
+              Write-Host "Creating ZIP: $zipPath"
+              
+              # Create temporary directory for this automation
+              $tempDir = "temp-$artifactName"
+              New-Item -ItemType Directory -Force -Path $tempDir
+              
+              # Copy files to temp directory
+              $exeFiles | ForEach-Object { Copy-Item $_.FullName "$tempDir\" }
+              $checksumFiles | ForEach-Object { Copy-Item $_.FullName "$tempDir\" }
+              
+              # Create ZIP
+              Compress-Archive -Path "$tempDir\*" -DestinationPath $zipPath -CompressionLevel Optimal
+              
+              # Clean up temp directory
+              Remove-Item -Path $tempDir -Recurse -Force
+            }
+          }
+          
+          Write-Host "Release assets:"
+          Get-ChildItem "release-assets" | ForEach-Object { Write-Host $_.Name }
+
+      - name: Generate version tag
+        id: version
+        shell: pwsh
+        run: |
+          $date = Get-Date -Format "yyyy.MM.dd"
+          $runNumber = "${{ github.run_number }}"
+          $version = "v$date.$runNumber"
+          echo "tag=$version" >> $env:GITHUB_OUTPUT
+          echo "Generated version: $version"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "Production Release ${{ steps.version.outputs.tag }}"
+          files: release-assets/*.zip
+          generate_release_notes: true
+          body: |
+            ## Production Release - ${{ steps.version.outputs.tag }}
+
+            **Commit:** ${{ github.sha }}
+            **Branch:** main
+            **Triggered by:** @${{ github.actor }}
+
+            ### Changed Automations
+            ${{ needs.detect-changes.outputs.automations }}
+
+            ### Built Executables
+            This release contains automation executables packaged as ZIP files:
+            - Compiled for Windows x64 platform
+            - Ready for production deployment
+            - Built from latest main branch
+            - Each ZIP contains the executable and SHA256 checksums
+
+            ### Download and Usage
+            1. Download the ZIP file for your automation
+            2. Extract the contents
+            3. Run the .exe file
+            4. Verify integrity using the included checksums.sha256 file
