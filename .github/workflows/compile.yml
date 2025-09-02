@@ -251,10 +251,15 @@ jobs:
               Write-Host "Running AutoIt3Wrapper..."
               & $autoit $wrapper /NoStatus /prod /in "main.au3" /out "$outputPath"
 
-              # Check if output file was created (AutoIt3Wrapper may return non-zero even on success)
+              # AutoIt3Wrapper often returns exit code 1 even on success, so we ignore the exit code
+              # and check for the output file instead
+              $wrapperExitCode = $LASTEXITCODE
+              Write-Host "AutoIt3Wrapper exit code: $wrapperExitCode"
+
+              # Check if output file was created (this is the real success indicator)
               if (Test-Path "$outputPath") {
                 Write-Host "AutoIt3Wrapper succeeded - executable created"
-                $LASTEXITCODE = 0
+                $global:LASTEXITCODE = 0  # Override the exit code since we have a successful build
               } else {
                 Write-Host "AutoIt3Wrapper build failed, trying direct Aut2Exe..."
                 # Fallback to direct Aut2Exe compilation
@@ -268,6 +273,12 @@ jobs:
                   if (-not (Test-Path "$outputPath")) {
                     Write-Host "x64 compilation failed, trying without /x64..."
                     & "$aut2exe" /console /in "main.au3" /out "$outputPath"
+                  }
+                  # Set exit code based on whether the file was created
+                  if (Test-Path "$outputPath") {
+                    $global:LASTEXITCODE = 0
+                  } else {
+                    $global:LASTEXITCODE = 1
                   }
                 }
               }
@@ -289,6 +300,8 @@ jobs:
             Write-Host "AutoIt build successful for $executableName"
             $fileInfo = Get-Item $expectedExe
             Write-Host "File size: $($fileInfo.Length) bytes"
+            # Ensure we exit with success code
+            exit 0
           } else {
             Write-Host "AutoIt build failed for $executableName - executable not found"
             Write-Host "Expected: $expectedExe"
@@ -296,7 +309,6 @@ jobs:
             Get-ChildItem -Path "dist" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
             exit 1
           }
-      
 
       # Generate checksums
       - name: Generate checksums
