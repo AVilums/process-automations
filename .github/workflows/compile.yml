@@ -207,16 +207,64 @@ jobs:
           $automationPath = "${{ matrix.automation }}"
           $executableName = "${{ matrix.name }}"
           New-Item -ItemType Directory -Force -Path "dist" | Out-Null
-          $aut2exe = "${env:ProgramFiles(x86)}\AutoIt3\Aut2Exe\Aut2Exe.exe"
-          if (-not (Test-Path $aut2exe)) {
-            Write-Host "Aut2Exe not found at $aut2exe"
-            Get-ChildItem -Path "${env:ProgramFiles(x86)}\AutoIt3" -Recurse -Filter "Aut2Exe.exe" -ErrorAction SilentlyContinue | ForEach-Object { $aut2exe = $_.FullName }
+          # Locate Aut2Exe (handle different install locations and filenames)
+          $aut2exe = $null
+          $pf = ${env:ProgramFiles}
+          $pf86 = ${env:ProgramFiles(x86)}
+          $candidates = @(
+            (Join-Path $pf86 "AutoIt3\Aut2Exe\Aut2Exe_x64.exe"),
+            (Join-Path $pf86 "AutoIt3\Aut2Exe\Aut2Exe.exe"),
+            (Join-Path $pf  "AutoIt3\Aut2Exe\Aut2Exe_x64.exe"),
+            (Join-Path $pf  "AutoIt3\Aut2Exe\Aut2Exe.exe")
+          )
+          foreach ($p in $candidates) { if (Test-Path $p) { $aut2exe = $p; break } }
+
+          if (-not $aut2exe) {
+            # Registry lookup for InstallDir
+            $regPaths = @(
+              "HKLM:\SOFTWARE\AutoIt v3\AutoIt",
+              "HKLM:\SOFTWARE\WOW6432Node\AutoIt v3\AutoIt"
+            )
+            foreach ($r in $regPaths) {
+              try {
+                $installDir = (Get-ItemProperty -Path $r -ErrorAction Stop).InstallDir
+                if ($installDir) {
+                  $regCandidates = @(
+                    (Join-Path $installDir "Aut2Exe\Aut2Exe_x64.exe"),
+                    (Join-Path $installDir "Aut2Exe\Aut2Exe.exe")
+                  )
+                  foreach ($rc in $regCandidates) { if (Test-Path $rc) { $aut2exe = $rc; break } }
+                }
+              } catch {}
+              if ($aut2exe) { break }
+            }
           }
-          if (-not (Test-Path $aut2exe)) {
+
+          if (-not $aut2exe) {
+            # Fallback recursive search in common locations
+            $searchRoots = @()
+            if ($pf86) { $searchRoots += $pf86 }
+            if ($pf) { $searchRoots += $pf }
+            $searchRoots += "C:\ProgramData\chocolatey\lib"
+            foreach ($root in $searchRoots) {
+              try {
+                $match = Get-ChildItem -Path $root -Recurse -Filter "Aut2Exe*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($match) { $aut2exe = $match.FullName; break }
+              } catch {}
+            }
+          }
+
+          if (-not $aut2exe -or -not (Test-Path $aut2exe)) {
             Write-Host "Aut2Exe.exe not found. Ensure AutoIt is installed."
             exit 1
           }
-          & $aut2exe /in "$automationPath\main.au3" /out "dist\$executableName.exe" /x64
+
+          # Attempt x64 build first, then fallback to default if it fails
+          & "$aut2exe" /in "$automationPath\main.au3" /out "dist\$executableName.exe" /x64
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Aut2Exe x64 build failed for $executableName, retrying without /x64..."
+            & "$aut2exe" /in "$automationPath\main.au3" /out "dist\$executableName.exe"
+          }
           if ($LASTEXITCODE -ne 0) {
             Write-Host "AutoIt build failed for $executableName"
             exit 1
