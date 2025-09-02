@@ -235,18 +235,27 @@ jobs:
           $automationPath = "${{ matrix.automation }}"
           $executableName = "${{ matrix.name }}"
           New-Item -ItemType Directory -Force -Path "dist" | Out-Null
-          
+
           # Use AutoIt3Wrapper for compilation (more robust than Aut2Exe directly)
           $wrapper = "${env:ProgramFiles(x86)}\AutoIt3\SciTE\AutoIt3Wrapper\AutoIt3Wrapper.au3"
           $autoit = "${env:ProgramFiles(x86)}\AutoIt3\AutoIt3.exe"
-          
+
           if ((Test-Path $wrapper) -and (Test-Path $autoit)) {
             $repoRoot = (Get-Location).Path
-            $outputPath = Join-Path $repoRoot "dist\$executableName.exe"
+            $outputPath = Join-Path $repoRoot "dist" "$executableName.exe"
+            Write-Host "Building AutoIt executable: $executableName"
+            Write-Host "Output path: $outputPath"
+
             Push-Location "$automationPath"
             try {
+              Write-Host "Running AutoIt3Wrapper..."
               & $autoit $wrapper /NoStatus /prod /in "main.au3" /out "$outputPath"
-              if ($LASTEXITCODE -ne 0) {
+
+              # Check if output file was created (AutoIt3Wrapper may return non-zero even on success)
+              if (Test-Path "$outputPath") {
+                Write-Host "AutoIt3Wrapper succeeded - executable created"
+                $LASTEXITCODE = 0
+              } else {
                 Write-Host "AutoIt3Wrapper build failed, trying direct Aut2Exe..."
                 # Fallback to direct Aut2Exe compilation
                 $aut2exe = "${env:ProgramFiles(x86)}\AutoIt3\Aut2Exe\Aut2Exe_x64.exe"
@@ -254,8 +263,10 @@ jobs:
                   $aut2exe = "${env:ProgramFiles(x86)}\AutoIt3\Aut2Exe\Aut2Exe.exe"
                 }
                 if (Test-Path $aut2exe) {
+                  Write-Host "Using Aut2Exe: $aut2exe"
                   & "$aut2exe" /console /in "main.au3" /out "$outputPath" /x64
-                  if ($LASTEXITCODE -ne 0) {
+                  if (-not (Test-Path "$outputPath")) {
+                    Write-Host "x64 compilation failed, trying without /x64..."
                     & "$aut2exe" /console /in "main.au3" /out "$outputPath"
                   }
                 }
@@ -271,13 +282,21 @@ jobs:
             Write-Host "AutoIt exists: $(Test-Path $autoit)"
             exit 1
           }
-          
+
           # Verify build output
-          $expectedExe = "dist\$executableName.exe"
-          if (-not (Test-Path $expectedExe)) {
-            Write-Host "AutoIt build failed for $executableName"
+          $expectedExe = Join-Path "dist" "$executableName.exe"
+          if (Test-Path $expectedExe) {
+            Write-Host "AutoIt build successful for $executableName"
+            $fileInfo = Get-Item $expectedExe
+            Write-Host "File size: $($fileInfo.Length) bytes"
+          } else {
+            Write-Host "AutoIt build failed for $executableName - executable not found"
+            Write-Host "Expected: $expectedExe"
+            Write-Host "Contents of dist directory:"
+            Get-ChildItem -Path "dist" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
             exit 1
           }
+      
 
       # Generate checksums
       - name: Generate checksums
