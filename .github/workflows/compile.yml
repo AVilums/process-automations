@@ -240,7 +240,7 @@ jobs:
           $wrapper = "${env:ProgramFiles(x86)}\AutoIt3\SciTE\AutoIt3Wrapper\AutoIt3Wrapper.au3"
           $autoit = "${env:ProgramFiles(x86)}\AutoIt3\AutoIt3.exe"
           
-          if (Test-Path $wrapper -and Test-Path $autoit) {
+          if ((Test-Path $wrapper) -and (Test-Path $autoit)) {
             $repoRoot = (Get-Location).Path
             $outputPath = Join-Path $repoRoot "dist\$executableName.exe"
             Push-Location "$automationPath"
@@ -265,6 +265,10 @@ jobs:
             }
           } else {
             Write-Host "AutoIt3Wrapper not found at expected location"
+            Write-Host "Wrapper path: $wrapper"
+            Write-Host "AutoIt path: $autoit"
+            Write-Host "Wrapper exists: $(Test-Path $wrapper)"
+            Write-Host "AutoIt exists: $(Test-Path $autoit)"
             exit 1
           }
           
