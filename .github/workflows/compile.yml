@@ -54,7 +54,11 @@ jobs:
           }
 
           $setupPath = Join-Path $env:RUNNER_TEMP 'autoit-setup.exe'
+          # Try current valid lowercase filenames first, then legacy uppercase variants
           $urls = @(
+            'https://www.autoitscript.com/files/autoit3/autoit-v3-setup.exe',
+            'https://www.autoitscript.com/cgi-bin/getfile.pl?autoit3/autoit-v3-setup.exe',
+            'https://www.autoitscript.com/autoit3/files/autoit3/autoit-v3-setup.exe',
             'https://www.autoitscript.com/files/autoit3/AutoIt-v3-Setup.exe',
             'https://www.autoitscript.com/autoit3/files/autoit3/AutoIt-v3-Setup.exe',
             'https://www.autoitscript.com/cgi-bin/getfile.pl?autoit3/AutoIt-v3-Setup.exe'
