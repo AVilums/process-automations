@@ -310,7 +310,7 @@ jobs:
       - name: Verify build output
         shell: pwsh
         run: |
-          $expectedExe = "dist/${{ matrix.name }}.exe"
+          $expectedExe = Join-Path "dist" "${{ matrix.name }}.exe"
           if (Test-Path $expectedExe) {
             Write-Host "Successfully built: $expectedExe"
             $fileInfo = Get-Item $expectedExe
