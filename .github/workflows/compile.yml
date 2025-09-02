@@ -249,17 +249,20 @@ jobs:
             Push-Location "$automationPath"
             try {
               Write-Host "Running AutoIt3Wrapper..."
-              & $autoit $wrapper /NoStatus /prod /in "main.au3" /out "$outputPath"
 
-              # AutoIt3Wrapper often returns exit code 1 even on success, so we ignore the exit code
-              # and check for the output file instead
-              $wrapperExitCode = $LASTEXITCODE
+              # Run AutoIt3Wrapper and capture both stdout and the process result
+              $process = Start-Process -FilePath $autoit -ArgumentList @($wrapper, "/NoStatus", "/prod", "/in", "main.au3", "/out", "`"$outputPath`"") -Wait -PassThru -NoNewWindow
+              $wrapperExitCode = $process.ExitCode
               Write-Host "AutoIt3Wrapper exit code: $wrapperExitCode"
+
+              # Wait a moment for file system to sync
+              Start-Sleep -Seconds 2
 
               # Check if output file was created (this is the real success indicator)
               if (Test-Path "$outputPath") {
                 Write-Host "AutoIt3Wrapper succeeded - executable created"
-                $global:LASTEXITCODE = 0  # Override the exit code since we have a successful build
+                $fileInfo = Get-Item "$outputPath"
+                Write-Host "File size: $($fileInfo.Length) bytes"
               } else {
                 Write-Host "AutoIt3Wrapper build failed, trying direct Aut2Exe..."
                 # Fallback to direct Aut2Exe compilation
@@ -269,16 +272,12 @@ jobs:
                 }
                 if (Test-Path $aut2exe) {
                   Write-Host "Using Aut2Exe: $aut2exe"
-                  & "$aut2exe" /console /in "main.au3" /out "$outputPath" /x64
+                  & "$aut2exe" /console /in "main.au3" /out "`"$outputPath`"" /x64
+                  Start-Sleep -Seconds 2
                   if (-not (Test-Path "$outputPath")) {
                     Write-Host "x64 compilation failed, trying without /x64..."
-                    & "$aut2exe" /console /in "main.au3" /out "$outputPath"
-                  }
-                  # Set exit code based on whether the file was created
-                  if (Test-Path "$outputPath") {
-                    $global:LASTEXITCODE = 0
-                  } else {
-                    $global:LASTEXITCODE = 1
+                    & "$aut2exe" /console /in "main.au3" /out "`"$outputPath`""
+                    Start-Sleep -Seconds 2
                   }
                 }
               }
@@ -296,10 +295,14 @@ jobs:
 
           # Verify build output using the absolute path we passed to the compiler
           $expectedExe = $outputPath
+          Write-Host "Checking for executable at: $expectedExe"
+          Write-Host "File exists: $(Test-Path $expectedExe)"
+
           if (Test-Path $expectedExe) {
             Write-Host "AutoIt build successful for $executableName"
             $fileInfo = Get-Item $expectedExe
             Write-Host "File size: $($fileInfo.Length) bytes"
+            Write-Host "File path: $($fileInfo.FullName)"
             # Ensure we exit with success code
             exit 0
           } else {
@@ -307,8 +310,10 @@ jobs:
             Write-Host "Expected: $expectedExe"
             Write-Host "Contents of dist directory:"
             Get-ChildItem -Path "dist" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+            Write-Host "Contents of automation directory:"
+            Get-ChildItem -Path "$automationPath" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
             exit 1
-          }
+          }  
 
       # Generate checksums
       - name: Generate checksums
