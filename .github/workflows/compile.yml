@@ -168,7 +168,7 @@ jobs:
           $automationPath = "${{ matrix.automation }}"
           $au3check = "${env:ProgramFiles(x86)}\AutoIt3\AU3Check.exe"
           if (Test-Path $au3check) {
-            & $au3check /in "$automationPath\main.au3"
+            & $au3check -q "$automationPath\main.au3"
             if ($LASTEXITCODE -ne 0) {
               Write-Host "AutoIt lint issues in ${{ matrix.name }} (non-blocking)"
               $LASTEXITCODE = 0
